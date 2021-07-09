@@ -1,5 +1,8 @@
+# -*- coding: utf-8 -*-
 import logging
+import random
 import re
+import time
 import uuid
 from json import JSONDecodeError
 from urllib.parse import urlparse, unquote
@@ -13,9 +16,10 @@ from urllib3.exceptions import InsecureRequestWarning
 import utils
 
 log = logger = logging
+random.seed()
 
 
-def get_html_status_text(html: str):
+def get_status_text(html: str):
     """
     cdn节点检测到问题时，返回html，本函数解析并返回其错误详情
     :param html: HTML内容
@@ -27,19 +31,28 @@ def get_html_status_text(html: str):
 
 
 class YiBan:
-    HEADERS = {
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://xsgl.jlau.edu.cn",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; VOG-AL00 Build/HUAWEIVOG-AL00) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/88.0.4324.181 Mobile Safari/537.36 yiban_android",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Referer": "https://xsgl.jlau.edu.cn/webApp/xuegong/index.html",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "zh-CN,en-US;q=0.8",
-        "appversion": "4.9.6",
-        "X-Requested-With": "com.yiban.app"
-    }
+    USERAGENTS = [
+        "Mozilla/5.0 (Linux; Android 10; VOG-AL00 Build/HUAWEIVOG-AL00) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/88.0.4324.181 Mobile Safari/537.36 yiban_android",
+        "Mozilla/5.0 (Linux; Android 9; Redmi Note 7 Build/PKQ1.180904.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/80.0.3578.141 Mobile Safari/537.36 yiban_android",
+        "Mozilla/5.0 (Linux; Android 9; HLK-AL10 Build/HONORHLK-AL10) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/81.0.3809.89 Mobile Safari/537.36 yiban_android",
+        "Mozilla/5.0 (Linux; Android 10; SEA-AL10 Build/HUAWEISEA-AL10) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/80.0.3809.89 Mobile Safari/537.36 yiban_android",
+        "Mozilla/5.0 (Linux; Android 10; MI 9 Build/QKQ1.190825.002) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/80.0.3396.87 Mobile Safari/537.36 yiban_android",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 11_4_1 like Mac OS X) AppleWebKit/601.3.9 (KHTML, like Gecko) Version/10.0 Mobile/15E148 yiban_android",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 11_2_6 like Mac OS X) AppleWebKit/604.3.5 (KHTML, like Gecko) Version/11.0 MQQBrowser/10.1.0 Mobile/15B87 Safari/604.1 yiban_android"
+    ]
 
-    def __init__(self, account, passwd, debug=False):
+    def __init__(self, account, passwd, ua: int = None, debug=False):
+        self.HEADERS = {
+            # "Accept": "application/json, text/plain, */*",
+            # "Origin": "https://xsgl.jlau.edu.cn",
+            "User-Agent": ua if ua else self.USERAGENTS[random.randint(0, len(self.USERAGENTS) - 1)],
+            # "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": "https://xsgl.jlau.edu.cn/webApp/xuegong/index.html",
+            "Accept-Encoding": "gzip, deflate",
+            # "Accept-Language": "zh-CN,en-US;q=0.8",
+            "appversion": "4.9.10",
+            "X-Requested-With": "com.yiban.app"
+        }
         self.account = account
         self.passwd = passwd
         self.access_token = ''
@@ -80,21 +93,27 @@ class YiBan:
         try:
             r = res.json()
         except JSONDecodeError:  # 返回数据非json，尝试分析为html
-            status_text = get_html_status_text(res.text)
+            if '<html>' in res.text:
+                status_text = get_status_text(res.text)
+            else:
+                status_text = res.text
             raise Exception(f"登录请求发生错误 {res.status_code}，返回：{status_text}")
         except Exception as e:
-            raise Exception(f"登录请求发生错误 {type(e)} {str(e)}")
+            raise Exception(f"登录请求发生错误 {e.__class__} {e.__context__}")
 
         # {'response': 100, 'message': '请求成功', 'data': {****}}
         # {'response': 101, 'message': '服务忙，请稍后再试。', 'data': []}
-        if r is not None and r["response"] == 100:
-            self.access_token = r["data"]["user"]["access_token"]
-            self.name = r["data"]["user"]["nick"]
-            return r
+        if r is not None:
+            if r["response"] == 100:
+                self.access_token = r["data"]["user"]["access_token"]
+                self.name = r["data"]["user"]["nick"]
+                return r
+            else:
+                raise Exception(f'请求登录发生错误：{r["message"]}')
         else:
-            raise Exception(f'请求登录发生错误：{r["message"]}')
+            raise Exception('易班返回登录结果为空')
 
-    def getHome(self):
+    def get_home_jlau(self):
         params = {
             "access_token": self.access_token,
         }
@@ -102,72 +121,107 @@ class YiBan:
         try:
             r = res.json()
         except JSONDecodeError:  # 返回数据非json，尝试分析为html
-            status_text = get_html_status_text(res.text)
+            status_text = get_status_text(res.text)
             raise Exception(f"请求iapp列表发生错误 {res.status_code}，返回：{status_text}")
         except Exception as e:
-            raise Exception(f"请求iapp列表发生错误 {type(e)} {str(e)}")
+            raise Exception(f"请求iapp列表发生错误 {e.__class__} {e.__context__}")
 
         # {'response': 100, 'message': '请求成功', 'data': {****}}
         # {'response': 101, 'message': '服务忙，请稍后再试。', 'data': []}
-        if r is not None and r["response"] == 100:
-            # 获取iapp号
-            for app in r["data"]["hotApps"]:
-                if app["name"] == "吉农学工系统":
-                    self.iapp = re.findall(r"(iapp.*)\?", app["url"])[0].split("/")[0]
-            return r
+        if r is not None:
+            if r["response"] == 100:
+                # 获取iapp号
+                for app in r["data"]["hotApps"]:
+                    if app["name"] == "吉农学工系统":
+                        self.iapp = re.findall(r"(iapp.*)\?", app["url"])[0].split("/")[0]
+                return r
+            else:
+                raise Exception(f'请求iapp列表发生错误 {r["message"]}')
         else:
-            raise Exception(f'请求iapp列表发生错误：{r["message"]}')
+            raise Exception('易班返回iapp列表为空')
 
-    def auth(self):
+    def do_auth_home(self):
+        if self.iapp == "":
+            self.get_home_jlau()
+        v_time = utils.get_v_time()
+
+        # 获取waf_cookie
         params = {
             "act": self.iapp,
             "v": self.access_token
         }
-        # 获取waf_cookie
-        v_time = utils.get_v_time()
-        self.request(f"http://f.yiban.cn/{self.iapp}/i/{self.access_token}?v_time={v_time}", allow_redirects=False)
-        # 尝试检测APP权限
-        location = self.request("http://f.yiban.cn/iapp/index", params=params, allow_redirects=False).headers.get(
-            "Location")
+        url = f"http://f.yiban.cn/{self.iapp}/i/{self.access_token}?v_time={v_time}"
+        r = self.request(url, allow_redirects=False)
+
+        # 向易班获取iapp接入地址
+        r = self.request(url="http://f.yiban.cn/iapp/index", params=params, allow_redirects=False)
+        location = r.headers.get("Location")
         # location = https://xsgl.jlau.edu.cn/nonlogin/yiban/authentication/4a46818571558ef9017155f721f20012.htm?verify_request=&yb_uid=
         if location is None:
-            raise Exception("该用户可能没进行校方认证，无此APP权限")
+            if '<html>' in r.text:
+                message = re.findall("(?<=<title>).*(?=</title>)", r.text)[0]
+                raise Exception(message)
+            else:
+                # 该用户可能没进行校方认证，无此APP权限
+                raise Exception(r.text[:101])
 
         # 登录学工系统
-        location_authQYY = self.request(location, allow_redirects=False).headers.get("Location")
-        # location_authQYY有两种情况 取决于iapp是否已授权
+        # 有几率登不上，wdnmd干爆
+        authQYY_location = None
+        retry_cont = 2
+        for i in range(retry_cont + 1):
+            url = location
+            r = self.request(url, allow_redirects=False)
+            authQYY_location = r.headers.get("Location")
+            if authQYY_location is not None:
+                break
+            elif i == retry_cont:  # 达到最大尝试次数
+                if "<html>" in r.text:  # html type
+                    message = re.findall("(?<=<title>).*(?=</title>)", r.text)[0]
+                    raise Exception(f"登录学工系统时遇到服务器错误 {message}")
+                else:
+                    message = r.text[:201]
+                    raise Exception(f"登录学工系统时遇到服务器错误 {message}")
+            time.sleep(5.0)
+
+        # authQYY_location有两种情况 取决于iapp是否已授权
         # 已授权返回Location https://xsgl.jlau.edu.cn/yiban/authorize.html
         # 未授权返回Location https://openapi.yiban.cn/oauth/authorize
 
-        if "oauth/authorize" in location_authQYY:  # 首次进入iapp，需要点击授权
+        # 首次进入iapp，需要点击授权
+        if "oauth/authorize" in authQYY_location:
             data = {'scope': '1,2,3,4,'}
-            query_params = urlparse(location_authQYY).query.split('&')
+            query_params = urlparse(authQYY_location).query.split('&')
             # log.debug(query_params)
             for line in query_params:
-                title, value = line.split("=")
+                title, value = str(line).split("=")
                 data[title] = value
             data['redirect_uri'] = unquote(data['redirect_uri'], 'utf-8')
             data['display'] = 'html'
-            # 发送确认授权请求
+            # 模拟确认授权
             usersure_res = self.request('https://oauth.yiban.cn/code/usersure', method='post', data=data)
             try:
                 usersure_r = usersure_res.json()
-            except JSONDecodeError:  # 返回数据非json，尝试分析为html
-                status_text = get_html_status_text(usersure_res.text)
-                raise Exception(f"授权iapp发生错误 {usersure_res.status_code}，返回：{status_text}")
+            except JSONDecodeError:
+                if '<html>' in usersure_res.text:
+                    status_text = get_status_text(usersure_res.text)  # 尝试分析为html
+                    raise Exception(f"授权iapp发生错误 {usersure_res.status_code}，返回：{status_text}")
+                else:
+                    raise Exception(usersure_res.text[:201])
             except Exception as e:
-                raise Exception(f"授权iapp发生错误 {type(e)} {str(e)}")
-
+                raise Exception(f"授权iapp发生错误 {str(e.__class__)}")
+            # 检查是否授权成功
             # {"code":"s200","reUrl":"https:\/\/f.yiban.cn\/iapp619789\/v\/0e4200ff23de1faa22a2cd6e07615767"}
             if usersure_r['code'] != 's200':
                 fail_reason = usersure_r['msgCN']
                 raise Exception(f'授权iapp失败！原因是：{fail_reason}')
-            # 授权成功，访问其返回的url
-            self.request(usersure_r['reUrl'])
-        # 最后请求登录本校系统
-        compressedCode = location_authQYY.split('?')[1].split('=')[1]
+            # 授权成功，模拟步进行为，访问跳转地址
+            r = self.request(usersure_r['reUrl'])
+
+        # 正式登录学工系统
+        compressedCode = authQYY_location.split('?')[1].split('=')[1]
         if compressedCode is None:
-            raise Exception('登录学工系统失败！compressedCode为空！')
+            raise Exception('登录学工系统失败,compressedCode为空')
         params = {
             'compressedCode': compressedCode,
             'deviceId': uuid.uuid1()
@@ -179,20 +233,25 @@ class YiBan:
         else:
             return False
 
-    def getList(self):
+    def get_sign_tasks(self):
         data = {
             'pageIndex': 0,
             'pageSize': 10,
             'type': 'yqsjcj'
         }
+        res = self.request("https://xsgl.jlau.edu.cn/syt/zzapply/queryxmqks.htm", method='post', data=data)
         try:
-            res = self.request("https://xsgl.jlau.edu.cn/syt/zzapply/queryxmqks.htm", method='post', data=data)
-            res = res.json()
-        except Exception as e:
-            raise Exception(f"请求任务列表发生错误 {type(e)} {str(e)}")
-        return res
+            r = res.json()
+        except JSONDecodeError:
+            if '<html>' in res.text:
+                message = re.findall("(?<=<title>).*(?=</title>)", res.text)[0]
+                raise Exception(f"请求任务列表发生错误 {message}")
+            else:
+                message = res.text[:201]
+                raise Exception(f"请求任务列表发生错误 {message}")
+        return r
 
-    def getTaskState(self, xmid):
+    def get_sign_task_state(self, xmid):
         data = {
             "xmid": xmid,
             "pdnf": 2020
@@ -202,22 +261,103 @@ class YiBan:
             return '未签到'
         return res.text
 
-    def getTaskDetail(self, xmid):
+    def get_sign_task_detail(self, xmid):
         data = {
             'projectId': xmid
         }
+        res = self.request("https://xsgl.jlau.edu.cn/syt/zzapi/getBaseApplyInfo.htm", method='post', data=data)
         try:
-            res = self.request("https://xsgl.jlau.edu.cn/syt/zzapi/getBaseApplyInfo.htm", method='post', data=data)
-            res = res.json()
-        except Exception as e:
-            raise Exception(f"请求任务详情发生错误 {type(e)} {str(e)}")
-        return res
+            r = res.json()
+        except JSONDecodeError:
+            if '<html>' in res.text:
+                message = re.findall("(?<=<title>).*(?=</title>)", res.text)[0]
+                raise Exception(f"请求任务详情发生错误 {message}")
+            else:
+                raise Exception(res.text)
+        return r
 
-    def submit(self, xmid, data):
+    def do_sign_submit(self, xmid, data):
+        """
+        :param xmid: 任务id
+        :param data: 表单JSON
+        :return: request
+        例 提交表单
+        data:
+        {
+          "xmqkb": { "id": "4a4681857601d718017603676e431b5c" },
+          "c2": "健康",
+          "c1": "35.7",
+          "type": "yqsjcj",
+          "location_longitude": 125.4096441219101,
+          "location_latitude": 43.80706615137553,
+          "location_address": "吉林省 长春市 南关区 新城大街 2888号 靠近吉林农业大学 "
+        }
+        """
         data = {
             "data": data,
             "msgUrl": f"syt/zzapply/list.htm?type=yqsjcj&xmid={xmid}",
             "multiSelectData": {},
-            "uploadFileStr": {}
+            "uploadFileStr": {},
+            "type": "yqsjcj"
         }
         return self.request("https://xsgl.jlau.edu.cn/syt/zzapply/operation.htm", method='post', data=data)
+
+    def get_signed_list(self, xmid, index=0, size=10):
+        """
+        :param xmid: 任务id
+        :param index: 拉取页码索引
+        :param size: 拉取任务数
+        :return: request
+        服务器返回值简例：{"data":[{"id":"4a46818578d4ec3601793f90c5f36fb4",...},{..},...]}
+        """
+        data = {
+            "pageIndex": index,
+            "pageSize": size,
+            "xmid": xmid,
+            "type": "yqsjcj"
+        }
+        return self.request("https://xsgl.jlau.edu.cn/syt/zzapply/queryxssqlist.htm", method='post', data=data)
+
+    def do_sign_modify(self, xmid, data):
+        """
+        :param xmid: 任务id
+        :param data: 表单JSON
+        :return: request
+        !!表单JSON中必须包含要修改的表单id(键名为"id")
+        例 修改表单
+        data:
+        {
+          "xmqkb": { "id": "4a4681857601d7180176036ceba11b6e" },
+          "c1": "35.7",
+          "c2": "健康",
+          "type": "yqsjcj",
+          "id": "4a46818578d4ec3601793f90c5f36fb4"
+        }
+        """
+        try:
+            _ = data["id"]
+        except KeyError:
+            raise Exception('提交修改请求时，表单data必须包含要修改的表单id(键名为"id")')
+        data = {
+            "data": data,
+            "msgUrl": f"syt/zzapply/list.htm?type=yqsjcj&xmid={xmid}",
+            "multiSelectData": {},
+            "uploadFileStr": {},
+            "type": "yqsjcj"
+        }
+        return self.request("https://xsgl.jlau.edu.cn/syt/zzapply/operation.htm", method='post', data=data)
+
+    def do_sign_remove(self, form_id):
+        """
+        :param form_id: 表单id
+        :return: request
+        删除签到记录
+        响应：
+        Content-Type：text/plain
+        例：“success”
+        """
+        data = {
+            "id": form_id,
+            "type": "yqsjcj"
+        }
+        return self.request("https://xsgl.jlau.edu.cn/syt/zzapply/remove.htm", method='post', data=data)
