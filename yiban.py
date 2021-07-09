@@ -3,7 +3,7 @@
 @File                : yiban.py
 @Github              : https://github.com/Jayve
 @Last modified by    : Jayve
-@Last modified time  : 2021-6-18 18:38:32
+@Last modified time  : 2021-7-1 10:52:15
 """
 import logging
 import random
@@ -23,6 +23,10 @@ log = logger = logging
 random.seed()
 
 
+def version():
+    return 'v2.0.2'
+
+
 class YiBan:
     USERAGENTS = [
         "Mozilla/5.0 (Linux; Android 10; VOG-AL00 Build/HUAWEIVOG-AL00) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/88.0.4324.181 Mobile Safari/537.36 yiban_android",
@@ -40,10 +44,13 @@ class YiBan:
             # "Origin": "https://xsgl.jlau.edu.cn",
             "User-Agent": ua if ua else self.USERAGENTS[random.randint(0, len(self.USERAGENTS) - 1)],
             # "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Referer": "https://xsgl.jlau.edu.cn/webApp/xuegong/index.html",
+            # "Referer": "https://xsgl.jlau.edu.cn/webApp/xuegong/index.html",
             "Accept-Encoding": "gzip, deflate",
             # "Accept-Language": "zh-CN,en-US;q=0.8",
             "appversion": "4.9.10",
+            # "signature": "",
+            # "logintoken": self.access_token,
+            # "authorization": f"Bearer {self.access_token}",
             "X-Requested-With": "com.yiban.app"
         }
         self.account = account
@@ -56,10 +63,12 @@ class YiBan:
         if self.debug:
             urllib3.disable_warnings(InsecureRequestWarning)
 
-    def request(self, url, method="get", data=None, params=None, json=None, cookies=None, max_retry: int = 2, **kwargs):
+    def request(self, url, method="get", data=None, params=None, json=None, headers=None, cookies=None,
+                max_retry: int = 2, **kwargs):
+        headers = self.HEADERS if not headers else headers
         for i in range(max_retry + 1):
             try:
-                response = self.session.request(method, url, params=params, data=data, json=json, headers=self.HEADERS,
+                response = self.session.request(method, url, params=params, data=data, json=json, headers=headers,
                                                 cookies=cookies, verify=not self.debug, **kwargs)
             except HTTPError as e:
                 log.error(f'HTTP错误:\n{e}')
@@ -93,6 +102,10 @@ class YiBan:
             if 'response' in r and r["response"] == 100:
                 self.access_token = r["data"]["user"]["access_token"]
                 self.name = r["data"]["user"]["nick"]
+                self.HEADERS.update({
+                    "logintoken": self.access_token,
+                    "authorization": f"Bearer {self.access_token}"
+                })
                 return r
             else:
                 message = r['message']
@@ -108,7 +121,7 @@ class YiBan:
         try:
             r = utils.resp_parse_json(resp=res)
         except Exception as e:
-            raise Exception(f"请求iapp列表发生错误 {str(e)}")
+            raise Exception(f"请求iapp列表发生错误 {repr(e)} {res.text[:101]}")
 
         # {'response': 100, 'message': '请求成功', 'data': {****}}
         # {'response': 101, 'message': '服务忙，请稍后再试。', 'data': []}
@@ -131,20 +144,24 @@ class YiBan:
         v_time = utils.get_v_time()
 
         # 获取waf_cookie
+        ex_headers = {
+
+        }
         params = {
-            "act": self.iapp,
-            "v": self.access_token
+            "act": self.iapp
+            # "v": self.access_token
         }
         url = f"http://f.yiban.cn/{self.iapp}/i/{self.access_token}?v_time={v_time}"
         self.request(url, allow_redirects=False)  # 此次请求的响应会往cookie池追加waf_cookie=xxxx
 
         # 向易班获取iapp入口
-        r = self.request(url="http://f.yiban.cn/iapp/index", params=params, allow_redirects=False)
+        r = self.request(url="http://f.yiban.cn/iapp/index", headers={**self.HEADERS, **ex_headers}, params=params,
+                         allow_redirects=False)
         location = r.headers.get("Location")
 
         # location = https://xsgl.jlau.edu.cn/nonlogin/yiban/authentication/4a46818571558ef9017155f721f20012.htm
         # ?verify_request=&yb_uid=
-        if not location and r.status_code == 302:
+        if not location:
             if 'html' in r.text:
                 message = re.findall("(?<=<title>).*(?=</title>)", r.text)[0]
                 raise Exception(f'获取iapp入口遇到错误 {message}')

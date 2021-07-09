@@ -3,12 +3,12 @@
 @File                : utils.py
 @Github              : https://github.com/Jayve
 @Last modified by    : Jayve
-@Last modified time  : 2021-6-18 18:38:37
+@Last modified time  : 2021-7-1 10:31:59
 """
 import datetime
 import re
 import time
-from json.decoder import JSONDecodeError
+from json import JSONDecodeError
 
 import requests
 
@@ -17,14 +17,14 @@ def resp_parse_json(resp: requests.Response):
     try:
         r = resp.json()
     except JSONDecodeError:
-        if 'html' in resp.text:       # 返回网页，抛出标题
+        if 'html' in resp.text:  # 返回网页，抛出标题
             message = re.findall("(?<=<title>).*(?=</title>)", resp.text)[0]
             raise Exception(message)
-        elif resp.text:                 # 有返回值，抛出返回值
+        elif resp.text:  # 有返回值，抛出返回值
             raise Exception(resp.text)
-        elif resp.status_code != 200:   # 无返回值，且状态码不是200，抛出状态码
+        elif resp.status_code != 200:  # 无返回值，且状态码不是200，抛出状态码
             raise Exception(resp.status_code)
-        else:                           # 无返回值，且状态码是200，抛出空异常
+        else:  # 无返回值，且状态码是200，抛出空异常
             raise Exception()
     else:
         return r
