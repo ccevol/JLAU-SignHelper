@@ -1,0 +1,61 @@
+#登录相关配置
+#将要进行签到的任务
+taskName:
+  - title: '本科生晨检任务'
+  - title: '本科生午检任务'
+#用户组配置
+users:
+  #单个用户配置
+  - user:
+      #username 手机号
+      username: ''
+      #password 密码
+      password: ''
+      #address 地址，定位信息
+      address: ''
+      #sckey 微信通知基于Server酱，需要填写个人SCKEY
+      sckey: ''
+      #qmsgkey QQ通知基于qmsg酱，需要填写qmsg个人key
+      qmsgkey: ''
+      #qq 用于发送QQ通知，需要填写qmsgkey，否则使用第一位用户的qmsgkey
+      qq: ''
+      #lon 经度
+      lon: ''
+      #lat 纬度
+      lat: ''
+  #多用户配置，将下面的注释去掉即可
+  # - user:
+  #     #username 手机号
+  #     username: ''
+  #     #password 密码
+  #     password: ''
+  #     #address 地址，定位信息
+  #     address: ''
+  #     #sckey 微信通知基于Server酱，需要填写个人SCKEY
+  #     sckey: ''
+  #     #qmsgkey QQ通知基于qmsg酱，需要填写qmsg个人key
+  #     qmsgkey: ''
+  #     #qq 用于发送QQ通知，需要填写qmsgkey，否则使用第一位用户的qmsgkey
+  #     qq: ''
+  #     #lon 经度
+  #     lon: ''
+  #     #lat 纬度
+  #     lat: ''
+
+
+#易班相关配置
+yiban:
+  #附加信息组默认选项配置，没有可留空
+  defaults:
+    #附加信息组默认选项配置，按顺序，可留空
+    - default:
+        #表单项标题
+        title: 当前体温是多少
+        #表单项默认值
+        value: 35.7
+    #多个额外选项配置
+    - default:
+        #表单项标题
+        title: 目前身体状况
+        #表单项默认值
+        value: 健康
