@@ -1,4 +1,4 @@
-#登录相关配置
+#登陆相关配置
 #将要进行签到的任务
 taskName:
   - title: '本科生晨检任务'
@@ -15,7 +15,7 @@ users:
       password: ''
       #address 地址，定位信息
       address: ''
-      #sckey 微信通知基于Server酱，需要填写个人SCKEY
+      #sckey 微信通知基于PushPlus，需要填写个人key
       sckey: ''
       #qmsgkey QQ通知基于qmsg酱，需要填写qmsg个人key
       qmsgkey: ''
@@ -25,7 +25,7 @@ users:
       lon: ''
       #lat 纬度
       lat: ''
-  #多用户配置，将下面的注释去掉即可
+  #多用户配置，将下面的注释去掉即可，如果有表单内容有图片，不建议使用多用户配置
   # - user:
   #       #alias 用户备注
   #       alias: ''

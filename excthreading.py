@@ -1,8 +1,16 @@
+# -*- coding: utf-8 -*-
+"""
+@File                : excthreading.py
+@Github              : https://github.com/Jayve
+@Last modified by    : Jayve
+@Last modified time  : 2021-6-18 18:38:40
+"""
 import threading
 
 
 # 对Python的多线程模块threading进行功能扩展，实现多线程抛出异常的功能。
 class ExcThread(threading.Thread):
+
     def __init__(self, group=None, target=None, name=None,
                  args=(), kwargs=None, verbose=None):
         threading.Thread.__init__(self, group, target, name, args, kwargs)

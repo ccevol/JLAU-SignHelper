@@ -1,7 +1,15 @@
 # -*- coding: utf-8 -*-
+"""
+@File                : index.py
+@Github              : https://github.com/Jayve
+@Last modified by    : Jayve
+@Last modified time  : 2021-6-18 18:38:43
+"""
 import json
 import logging
+import os
 import re
+import threading
 import traceback
 from datetime import datetime, timedelta, timezone
 
@@ -11,8 +19,13 @@ import yaml
 from urllib3.exceptions import InsecureRequestWarning
 
 import utils
-from yiban import YiBan
 from excthreading import ExcThread
+from yiban import YiBan
+
+
+def version():
+    return 'v2.1.0'
+
 
 log = logger = logging
 
@@ -51,15 +64,68 @@ MESSAGE_TAMPLATE = '''
 
 
 # 获取当前utc时间，并格式化为北京时间
-def get_time():
+def get_time(string: bool = True, tzinfo: timezone = None):
     utc_dt = datetime.utcnow().replace(tzinfo=timezone.utc)
     bj_dt = utc_dt.astimezone(timezone(timedelta(hours=8)))
-    return bj_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if string:
+        return bj_dt.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        return bj_dt.replace(tzinfo=tzinfo)
+
+
+local_info = threading.local()  # 在全局变量定义local类，为每个子线程提供私有变量
+mutex = threading.Lock()  # 多线程操作全局变量 使用全局互斥锁
+LOGOUT = {
+    'lastcheck': get_time(),
+    'users': []
+}
+
+
+# 检查上一次的日志文件
+def check_previous_log(logfile='logout.yml'):
+    demand_users = []
+    if not os.path.exists(logfile):  # 日志文件不存在?
+        log.debug('日志文件不存在')
+        return False
+    else:
+        with open(file=logfile, mode='r', encoding='utf-8') as f:
+            pre_log = yaml.full_load(f)
+        if not pre_log or all(k not in pre_log for k in ['lastcheck', 'users']):  # 日志文件不合法?
+            log.debug('日志文件不合法')
+            return False
+        else:
+            logtime = datetime.strptime(pre_log['lastcheck'], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+            logdate = datetime.strptime(logtime, "%Y-%m-%d")
+            nowtime = get_time(string=False).strftime("%Y-%m-%d")
+            nowdate = datetime.strptime(nowtime, "%Y-%m-%d")
+            deltatime = nowdate - logdate
+            if deltatime.days >= 1:  # 日志大于一天，则过期
+                log.debug('日志文件过期')
+                return False
+            else:
+                LOGOUT['users'] = pre_log['users']
+                users_done = []
+                for user in pre_log['users']:
+                    if user['status'] == 'alldone' and user['user'] not in users_done:
+                        users_done.append(user['user'])
+                for user in config['users']:  # 遍历筛选用户配置中的对应用户
+                    username = [user['user']['username']]
+                    alias = [user['user']['alias']]
+                    if not set(username).intersection(set(users_done)) and not set(alias).intersection(set(users_done)):
+                        # if user not in demand_users:
+                        demand_users.append(user)
+                return demand_users
+
+
+# 写出日志文件
+def write_logout_file(logfile='logout.yml'):
+    yml_data = yaml.dump(data=LOGOUT, allow_unicode=True, sort_keys=False)
+    with open(file=logfile, mode='w+', encoding='utf-8') as f:
+        f.write(yml_data)
 
 
 # 检查签到任务列表
 def do_check_unsigned_tasks(yiban, user):
-    user = user['user']
     tasks = yiban.get_sign_tasks()
     # log.debug(tasks)
     if len(tasks['data']) < 1:
@@ -93,7 +159,6 @@ def get_task_detail(yiban, params):
 
 # 填充表单
 def do_fill_form(task, params, user):
-    user = user['user']
     form = dict()
     form['xmqkb'] = {'id': params['id']}
     applyFields = task['data']['applyFields']
@@ -129,32 +194,31 @@ def do_fill_form(task, params, user):
 
 # 提交签到任务
 def do_submit_form(yiban, params, form, user):
-    user = user['user']
-    res = yiban.do_sign_submit(params['id'], form)
-    message = res.text
-    if message == 'success':
-        status = '成功'
-        send_result(status, params, **user)
-    elif message == 'Applied today':
-        status = '今日已签到'
-        send_result(status, params, **user)
-    elif "<html>" in message:  # html type
-        message = "提交时遇到服务器错误" + re.findall("(?<=<title>).*(?=</title>)", message)[0]
-        raise Exception(message)
+    try:
+        message = yiban.do_sign_submit(xmid=params['id'], data=form)
+    except Exception as e:
+        raise Exception(f'提交时遇到服务器错误 {str(e)}')
     else:
-        raise Exception(message)
+        if message == 'success':
+            status = '成功'
+            send_result(status, params, **user)
+        elif message == 'Applied today':
+            status = '今日已签到'
+            send_result(status, params, **user)
+        else:
+            raise Exception(message)
 
 
 # 签到结果处理
 def send_result(status, params=None, **user):
     # 拼接推送消息模板
     taskName = '无'
-    if params is not None:
+    if params:
         taskName = params['xmmc']
     fmted_time = get_time()
     # 选择使用备注名 或 登录名
     if 'alias' in user:
-        if user['alias'] != '' and user['alias'] is not None:
+        if user['alias']:
             alias = user['alias']
         else:
             alias = user['username']
@@ -187,10 +251,19 @@ def send_result(status, params=None, **user):
         log.error(f"{status}")
     elif re.findall('成功|已完成|已签', status):  # 是否包含错误
         log.info(result)
+        if taskName == '无':
+            local_info.status = 'alldone'
+        else:
+            for index, taskname in enumerate(config['taskName']):
+                if taskName == taskname['title']:
+                    if index >= len(config['taskName']) - 1:
+                        local_info.status = 'alldone'
+                    else:
+                        local_info.status = 'demand'
     else:
         log.error(result)
     # 推送方式抉择
-    if user['sckey'] != '' and user['sckey'] is not None:
+    if user['sckey']:
         push_to_pushplus(title=title, msg=msg, sckey=user['sckey'])  # 选择微信推送
     else:
         msg = f'{title}\n{msg}'
@@ -204,7 +277,7 @@ def send_result(status, params=None, **user):
 # 发送微信通知 基于PushPlus
 def push_to_pushplus(title, msg, sckey):
     # log.debug(sckey)
-    if sckey != '' and sckey is not None:
+    if sckey:
         log.info('正在发送微信通知。。。')
         data = {
             'token': sckey,
@@ -235,18 +308,18 @@ def push_to_pushplus(title, msg, sckey):
 
 # 发送QQ通知 基于qmsg酱
 def push_to_qmsg(msg, qmsgkey=None, qqnum=None):
-    if qqnum is not None and (qmsgkey is None or qmsgkey == ''):
+    if qqnum and qmsgkey:
         try:
             qmsgkey = config['users'][0]['user']['qmsgkey']
         except KeyError:
             raise Exception('无法推送!当前用户和第一用户的qmsgkey均为空.')
     # log.debug(sckey)
-    if qmsgkey != '' and qmsgkey is not None:
+    if qmsgkey:
         log.info('正在发送qq通知。。。')
         data = {
             'msg': msg,
         }
-        if qqnum is not None:
+        if qqnum:
             data['qq'] = qqnum
         # log.debug(data)
         url = f'https://qmsg.zendee.cn/send/{qmsgkey}'
@@ -268,44 +341,78 @@ def push_to_qmsg(msg, qmsgkey=None, qqnum=None):
 
 
 # 主要签到流程
-def dosign(**user):
-    # 实例化一个易班用户
-    yiban = YiBan(user['user']['username'], user['user']['password'], debug=DEV_MODE)
-    # 1 登录易班
-    log.info('步骤(1/6) 正在登录易班..')
-    token = yiban.login()
-    log.debug(token)
-    if len(yiban.name) < 5:  # 当用户名为姓名时，显示
-        user['user']['username'] = yiban.name
-    # 2 登录学工系统
-    log.info('步骤(2/6) 正在登录学工系统..')
-    yiban.do_auth_home()
-    # 3 开始签到
-    log.info('步骤(3/6) 正在检查任务状态..')
-    params = do_check_unsigned_tasks(yiban=yiban, user=user)  # 按照用户配置，检查任务列表
-    if params == '':  # 无可签任务，跳过
-        pass
-    else:
-        log.info('步骤(4/6) 正在获取任务详情..')
-        task = get_task_detail(yiban=yiban, params=params)  # 获取任务要求
-        log.info('步骤(5/6) 正在预填充表单..')
-        form = do_fill_form(task=task, params=params, user=user)  # 填充表单
-        log.info('步骤(6/6) 正在向学校提交签到信息..')
-        do_submit_form(yiban=yiban, params=params, form=form, user=user)  # 提交表单
+def dosign(**kwargs):
+    try:
+        user = kwargs.get('user')
+        alias = kwargs.get('alias')
+        # 初始化线程状态信息
+        local_info.name = alias
+        local_info.status = ''
+        local_info.msg = ''
+        # 实例化一个易班用户类
+        yiban = YiBan(user['username'], user['password'], debug=DEV_MODE)
+        # 1 登录易班
+        log.info('步骤(1/6) 正在登录易班..')
+        token = yiban.login()
+        log.debug(token)
+        if len(yiban.name) < 5:  # 当用户名为姓名时，显示
+            user['username'] = yiban.name
+        # 2 登录学工系统
+        log.info('步骤(2/6) 正在登录学工系统..')
+        yiban.do_auth_home()
+        # 3 开始签到
+        log.info('步骤(3/6) 正在检查任务状态..')
+        params = do_check_unsigned_tasks(yiban=yiban, user=user)  # 按照用户配置，检查任务列表
+        if params == '':  # 无可签任务，跳过
+            pass
+        else:
+            log.info('步骤(4/6) 正在获取任务详情..')
+            task = get_task_detail(yiban=yiban, params=params)  # 获取任务要求
+            log.info('步骤(5/6) 正在预填充表单..')
+            form = do_fill_form(task=task, params=params, user=user)  # 填充表单
+            log.info('步骤(6/6) 正在向学校提交签到信息..')
+            do_submit_form(yiban=yiban, params=params, form=form, user=user)  # 提交表单
+    except Exception as e:
+        local_info.status = 'error'
+        local_info.msg = str(e)
+        raise e
+    finally:
+        global LOGOUT, mutex
+        ulog = {
+            'user': local_info.name,
+            'status': local_info.status,
+            'msg': local_info.msg
+        }
+        if len(LOGOUT['users']) < 1:  # 如果列表为空，直接追加内容
+            if mutex.acquire():
+                LOGOUT['users'].append(ulog)
+                mutex.release()
+        else:
+            for index, user_dict in enumerate(LOGOUT['users']):
+                if user_dict['user'] == local_info.name:  # 日志中已存在该用户，则更新内容
+                    if mutex.acquire():
+                        LOGOUT['users'][index].update(ulog)
+                        mutex.release()
+                    break
+                elif index >= len(LOGOUT['users']) - 1:  # 遍历完仍未匹配该用户，则追加内容
+                    if mutex.acquire():
+                        LOGOUT['users'].append(ulog)
+                        mutex.release()
 
 
 # 主函数 创建多线程任务 && 错误回收和处理
 def main():
-    ths = []
-    err = {}
-    for index, user in enumerate(config['users']):
-        if 'alias' in user['user']:  # 选择使用备注名 或 登录名
-            alias = user['user']['alias']
-            if alias == '' or alias is None:
-                alias = user['user']['username']
-        else:
-            alias = user['user']['username']
-        th = ExcThread(target=dosign, name=f"{index}-{alias}", kwargs={**user})
+    ths = []  # 线程集
+    err = {}  # 错误集
+    demand_list = check_previous_log()  # 获取待操的用户集
+    if demand_list is False:  # 返回False，日志无参考价值，所有人重新跑
+        demand_list = config['users']
+    elif len(demand_list) < 1:  # 返回空列表，无人可签，象征性bb一句
+        log.info('所有用户均不需要执行任务.')
+    for index, user in enumerate(demand_list):
+        # 选择使用备注名 或 登录名
+        alias = user['user']['alias'] if 'alias' in user['user'] and user['user']['alias'] else user['user']['username']
+        th = ExcThread(target=dosign, name=f"{index}-{alias}", kwargs={**user, 'alias': alias})
         ths.append(th)
         th.start()
     for th in ths:
@@ -328,6 +435,8 @@ def main():
         user = config['users'][0]['user']  # 通知第一用户
         send_result(status=status, params=None, **user)
         raise Exception(f'检测到有用户发生错误：{str(err)}')
+    # 最后写出日志文件
+    write_logout_file()
 
 
 # 提供给云函数调用的启动函数

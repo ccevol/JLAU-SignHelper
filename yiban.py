@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
+"""
+@File                : yiban.py
+@Github              : https://github.com/Jayve
+@Last modified by    : Jayve
+@Last modified time  : 2021-6-18 18:38:32
+"""
 import logging
 import random
 import re
 import time
 import uuid
-from json import JSONDecodeError
 from urllib.parse import urlparse, unquote
 
 import requests
 import urllib3
-from bs4 import BeautifulSoup
 from requests import HTTPError
 from urllib3.exceptions import InsecureRequestWarning
 
@@ -17,17 +21,6 @@ import utils
 
 log = logger = logging
 random.seed()
-
-
-def get_status_text(html: str):
-    """
-    cdn节点检测到问题时，返回html，本函数解析并返回其错误详情
-    :param html: HTML内容
-    :return: status_text: 错误详情内容
-    """
-    bs = BeautifulSoup(html, 'html.parser')
-    status_text = bs.find("span", id="status_text").get_text()
-    return status_text
 
 
 class YiBan:
@@ -66,9 +59,8 @@ class YiBan:
     def request(self, url, method="get", data=None, params=None, json=None, cookies=None, max_retry: int = 2, **kwargs):
         for i in range(max_retry + 1):
             try:
-                s = self.session
-                response = s.request(method, url, params=params, data=data, json=json, headers=self.HEADERS,
-                                     cookies=cookies, verify=not self.debug, **kwargs)
+                response = self.session.request(method, url, params=params, data=data, json=json, headers=self.HEADERS,
+                                                cookies=cookies, verify=not self.debug, **kwargs)
             except HTTPError as e:
                 log.error(f'HTTP错误:\n{e}')
                 log.error(f'第 {i + 1} 次请求失败, 重试...')
@@ -91,27 +83,22 @@ class YiBan:
         # 调用v3接口登录，无需加密密码
         res = self.request(url="https://mobile.yiban.cn/api/v3/passport/login", method='post', data=data)
         try:
-            r = res.json()
-        except JSONDecodeError:  # 返回数据非json，尝试分析为html
-            if '<html>' in res.text:
-                status_text = get_status_text(res.text)
-            else:
-                status_text = res.text
-            raise Exception(f"登录请求发生错误 {res.status_code}，返回：{status_text}")
+            r = utils.resp_parse_json(resp=res)
         except Exception as e:
-            raise Exception(f"登录请求发生错误 {e.__class__} {e.__context__}")
+            raise Exception(f"登录易班发生错误 {str(e)}")
 
         # {'response': 100, 'message': '请求成功', 'data': {****}}
         # {'response': 101, 'message': '服务忙，请稍后再试。', 'data': []}
-        if r is not None:
-            if r["response"] == 100:
+        if r:
+            if 'response' in r and r["response"] == 100:
                 self.access_token = r["data"]["user"]["access_token"]
                 self.name = r["data"]["user"]["nick"]
                 return r
             else:
-                raise Exception(f'请求登录发生错误：{r["message"]}')
+                message = r['message']
+                raise Exception(f'登录易班发生错误：{message}')
         else:
-            raise Exception('易班返回登录结果为空')
+            raise Exception('易班登录返回结果异常，为空')
 
     def get_home_jlau(self):
         params = {
@@ -119,26 +106,24 @@ class YiBan:
         }
         res = self.request(url="https://mobile.yiban.cn/api/v3/home", params=params)
         try:
-            r = res.json()
-        except JSONDecodeError:  # 返回数据非json，尝试分析为html
-            status_text = get_status_text(res.text)
-            raise Exception(f"请求iapp列表发生错误 {res.status_code}，返回：{status_text}")
+            r = utils.resp_parse_json(resp=res)
         except Exception as e:
-            raise Exception(f"请求iapp列表发生错误 {e.__class__} {e.__context__}")
+            raise Exception(f"请求iapp列表发生错误 {str(e)}")
 
         # {'response': 100, 'message': '请求成功', 'data': {****}}
         # {'response': 101, 'message': '服务忙，请稍后再试。', 'data': []}
-        if r is not None:
-            if r["response"] == 100:
+        if r:
+            if 'response' in r and r["response"] == 100:
                 # 获取iapp号
                 for app in r["data"]["hotApps"]:
                     if app["name"] == "吉农学工系统":
                         self.iapp = re.findall(r"(iapp.*)\?", app["url"])[0].split("/")[0]
                 return r
             else:
-                raise Exception(f'请求iapp列表发生错误 {r["message"]}')
+                message = r['message']
+                raise Exception(f'请求iapp列表发生错误 {message}')
         else:
-            raise Exception('易班返回iapp列表为空')
+            raise Exception('易班返回iapp列表异常，为空')
 
     def do_auth_home(self):
         if self.iapp == "":
@@ -151,19 +136,22 @@ class YiBan:
             "v": self.access_token
         }
         url = f"http://f.yiban.cn/{self.iapp}/i/{self.access_token}?v_time={v_time}"
-        r = self.request(url, allow_redirects=False)
+        self.request(url, allow_redirects=False)  # 此次请求的响应会往cookie池追加waf_cookie=xxxx
 
-        # 向易班获取iapp接入地址
+        # 向易班获取iapp入口
         r = self.request(url="http://f.yiban.cn/iapp/index", params=params, allow_redirects=False)
         location = r.headers.get("Location")
-        # location = https://xsgl.jlau.edu.cn/nonlogin/yiban/authentication/4a46818571558ef9017155f721f20012.htm?verify_request=&yb_uid=
-        if location is None:
-            if '<html>' in r.text:
+
+        # location = https://xsgl.jlau.edu.cn/nonlogin/yiban/authentication/4a46818571558ef9017155f721f20012.htm
+        # ?verify_request=&yb_uid=
+        if not location and r.status_code == 302:
+            if 'html' in r.text:
                 message = re.findall("(?<=<title>).*(?=</title>)", r.text)[0]
-                raise Exception(message)
+                raise Exception(f'获取iapp入口遇到错误 {message}')
             else:
                 # 该用户可能没进行校方认证，无此APP权限
-                raise Exception(r.text[:101])
+                message = r.text[:101]
+                raise Exception(f'获取iapp入口遇到错误 {message}')
 
         # 登录学工系统
         # 有几率登不上，wdnmd干爆
@@ -173,10 +161,10 @@ class YiBan:
             url = location
             r = self.request(url, allow_redirects=False)
             authQYY_location = r.headers.get("Location")
-            if authQYY_location is not None:
+            if authQYY_location:
                 break
-            elif i == retry_cont:  # 达到最大尝试次数
-                if "<html>" in r.text:  # html type
+            elif i >= retry_cont:  # 达到最大尝试次数
+                if "<html>" in r.text:
                     message = re.findall("(?<=<title>).*(?=</title>)", r.text)[0]
                     raise Exception(f"登录学工系统时遇到服务器错误 {message}")
                 else:
@@ -199,29 +187,26 @@ class YiBan:
             data['redirect_uri'] = unquote(data['redirect_uri'], 'utf-8')
             data['display'] = 'html'
             # 模拟确认授权
-            usersure_res = self.request('https://oauth.yiban.cn/code/usersure', method='post', data=data)
+            resp = self.request('https://oauth.yiban.cn/code/usersure', method='post', data=data)
             try:
-                usersure_r = usersure_res.json()
-            except JSONDecodeError:
-                if '<html>' in usersure_res.text:
-                    status_text = get_status_text(usersure_res.text)  # 尝试分析为html
-                    raise Exception(f"授权iapp发生错误 {usersure_res.status_code}，返回：{status_text}")
-                else:
-                    raise Exception(usersure_res.text[:201])
+                r = utils.resp_parse_json(resp=resp)
             except Exception as e:
-                raise Exception(f"授权iapp发生错误 {str(e.__class__)}")
+                raise Exception(f"授权iapp时遇到错误 {str(e)}")
             # 检查是否授权成功
             # {"code":"s200","reUrl":"https:\/\/f.yiban.cn\/iapp619789\/v\/0e4200ff23de1faa22a2cd6e07615767"}
-            if usersure_r['code'] != 's200':
-                fail_reason = usersure_r['msgCN']
-                raise Exception(f'授权iapp失败！原因是：{fail_reason}')
-            # 授权成功，模拟步进行为，访问跳转地址
-            r = self.request(usersure_r['reUrl'])
+            if r['code'] != 's200':
+                if 'msgCN' in r:
+                    fail_reason = r['msgCN']
+                    raise Exception(f'授权iapp时遇到错误 {fail_reason}')
+                else:
+                    raise Exception(f'授权iapp时遇到错误 {r.status_code}')
+            # 授权成功，模拟客户端行为，访问跳转地址
+            self.request(r['reUrl'])
 
         # 正式登录学工系统
         compressedCode = authQYY_location.split('?')[1].split('=')[1]
-        if compressedCode is None:
-            raise Exception('登录学工系统失败,compressedCode为空')
+        if not compressedCode:
+            raise Exception('登录学工系统遇到异常,compressedCode为空')
         params = {
             'compressedCode': compressedCode,
             'deviceId': uuid.uuid1()
@@ -241,14 +226,9 @@ class YiBan:
         }
         res = self.request("https://xsgl.jlau.edu.cn/syt/zzapply/queryxmqks.htm", method='post', data=data)
         try:
-            r = res.json()
-        except JSONDecodeError:
-            if '<html>' in res.text:
-                message = re.findall("(?<=<title>).*(?=</title>)", res.text)[0]
-                raise Exception(f"请求任务列表发生错误 {message}")
-            else:
-                message = res.text[:201]
-                raise Exception(f"请求任务列表发生错误 {message}")
+            r = utils.resp_parse_json(resp=res)
+        except Exception as e:
+            raise Exception(f"请求任务列表发生错误 {str(e)}")
         return r
 
     def get_sign_task_state(self, xmid):
@@ -258,7 +238,13 @@ class YiBan:
         }
         res = self.request("https://xsgl.jlau.edu.cn/syt/zzapply/checkrestrict.htm", method='post', data=data)
         if res.text == '':
-            return '未签到'
+            if res.status_code == 200:
+                return '未签到'
+            else:
+                raise Exception(f"请求任务状态发生错误 {res.status_code}")
+        elif 'html' in res.text:
+            message = re.findall("(?<=<title>).*(?=</title>)", res.text)[0]
+            raise Exception(f"请求任务状态发生错误 {message}")
         return res.text
 
     def get_sign_task_detail(self, xmid):
@@ -267,13 +253,9 @@ class YiBan:
         }
         res = self.request("https://xsgl.jlau.edu.cn/syt/zzapi/getBaseApplyInfo.htm", method='post', data=data)
         try:
-            r = res.json()
-        except JSONDecodeError:
-            if '<html>' in res.text:
-                message = re.findall("(?<=<title>).*(?=</title>)", res.text)[0]
-                raise Exception(f"请求任务详情发生错误 {message}")
-            else:
-                raise Exception(res.text)
+            r = utils.resp_parse_json(resp=res)
+        except Exception as e:
+            raise Exception(f"请求任务详情发生错误 {str(e)}")
         return r
 
     def do_sign_submit(self, xmid, data):
@@ -300,7 +282,15 @@ class YiBan:
             "uploadFileStr": {},
             "type": "yqsjcj"
         }
-        return self.request("https://xsgl.jlau.edu.cn/syt/zzapply/operation.htm", method='post', data=data)
+        res = self.request("https://xsgl.jlau.edu.cn/syt/zzapply/operation.htm", method='post', data=data)
+        if 'html' in res.text:
+            message = re.findall("(?<=<title>).*(?=</title>)", res.text)[0]
+            raise Exception(message)
+        elif res.status_code == 200:
+            # 正常返回'success' 或 'Applied today'
+            return res.text
+        else:
+            raise Exception(res.status_code)
 
     def get_signed_list(self, xmid, index=0, size=10):
         """
@@ -316,7 +306,13 @@ class YiBan:
             "xmid": xmid,
             "type": "yqsjcj"
         }
-        return self.request("https://xsgl.jlau.edu.cn/syt/zzapply/queryxssqlist.htm", method='post', data=data)
+        resp = self.request("https://xsgl.jlau.edu.cn/syt/zzapply/queryxssqlist.htm", method='post', data=data)
+        try:
+            r = utils.resp_parse_json(resp=resp)
+        except Exception as e:
+            raise Exception(f'获取已签任务列表时遇到错误 {str(e)}')
+        else:
+            return r
 
     def do_sign_modify(self, xmid, data):
         """
@@ -334,9 +330,7 @@ class YiBan:
           "id": "4a46818578d4ec3601793f90c5f36fb4"
         }
         """
-        try:
-            _ = data["id"]
-        except KeyError:
+        if 'id' not in data:
             raise Exception('提交修改请求时，表单data必须包含要修改的表单id(键名为"id")')
         data = {
             "data": data,
